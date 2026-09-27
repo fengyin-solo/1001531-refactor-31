@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.service import ServiceService
+from app.services.service import EMPTY_NOTE, ServiceService
 
 router = APIRouter(prefix="/api/service", tags=["服务保障"])
 
@@ -14,6 +14,7 @@ service = ServiceService()
 
 LIST_FIELDS = ["事项编号", "服务对象", "服务类别", "响应时限", "受理人员", "完成时刻", "评价结果", "事项状态"]
 STATUSES = ["待受理", "办理中", "已办结", "已退回"]
+STAT_LABELS = ["待受理事项", "办理中事项", "超时未办结"]
 
 
 @router.get("", response_model=PageResult[dict])
@@ -30,8 +31,32 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/stats")
+def entry_stats(
+    keyword: str | None = Query(default=None, description="按事项编号检索"),
+    status: str | None = Query(default=None, description="待受理、办理中、已办结、已退回"),
+) -> dict[str, Any]:
+    """统计卡片数据：与列表共用同一过滤集和同一份超期口径。
+
+    空结果时各项均为 0，并返回统一措辞的说明，前端不再自行计数。
+    """
+    counts = service.summarize(keyword=keyword, status=status)
+    matched = sum(counts.values())
+    return {
+        "stats": [{"label": label, "value": counts[label]} for label in STAT_LABELS],
+        "note": None if matched else EMPTY_NOTE,
+    }
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出服务保障清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "service", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
-def get_entry(entry_id: int) -> dict:
+def get_entry(entry_id: int) -> dict[str, Any]:
     """读取单条服务事项明细；不存在时给出可读的错误说明。"""
     entry = service.get_entry(entry_id)
     if entry is None:
@@ -56,10 +81,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出服务保障清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "service", "total": total, "items": items}
