@@ -28,6 +28,13 @@ class EntryPayload(BaseModel):
     remark: str | None = None
 
 
+class ServicePageResult(PageResult[dict]):
+    """服务保障列表的分页结果：附带同一份口径算出的统计汇总与说明。"""
+
+    summary: dict[str, int] | None = None
+    note: str | None = None
+
+
 
 class StationEntry(BaseModel):
     """观测站点明细结构。"""

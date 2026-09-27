@@ -19,9 +19,16 @@
     </div>
 
     <form class="filter-bar" @submit.prevent="reload">
-      <label v-for="field in filterFields" :key="field" class="filter-item">
-        <span>{{ field }}</span>
-        <input v-model="filters[field]" :placeholder="`按${field}检索`" />
+      <label class="filter-item">
+        <span>事项编号</span>
+        <input v-model="filters.keyword" placeholder="按事项编号检索" />
+      </label>
+      <label class="filter-item">
+        <span>事项状态</span>
+        <select v-model="filters.status">
+          <option value="">全部状态</option>
+          <option v-for="status in statuses" :key="status" :value="status">{{ status }}</option>
+        </select>
       </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
@@ -31,15 +38,25 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>超期状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td>
+            <span
+              class="overdue-tag"
+              :class="{ 'is-overdue': row.overdue }"
+              :title="String(row['超期说明'] ?? '')"
+            >
+              {{ row['超期状态'] ?? '—' }}
+            </span>
+          </td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in rowActions(row)"
               :key="action"
               class="link"
               type="button"
@@ -47,10 +64,11 @@
             >
               {{ action }}
             </button>
+            <span v-if="!rowActions(row).length" class="muted-text">已办结归档</span>
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无服务保障数据，可先登记服务事项</td>
+          <td :colspan="columns.length + 2" class="empty-state">{{ emptyNote }}</td>
         </tr>
       </tbody>
     </table>
@@ -67,22 +85,28 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | string[] | null>
 
 const ENDPOINT = '/api/service'
 const columns = ["事项编号", "服务对象", "服务类别", "响应时限", "受理人员", "完成时刻", "评价结果", "事项状态"]
-const actions = ["受理事项", "确认办结", "退回事项"]
 const statuses = ["待受理", "办理中", "已办结", "已退回"]
-const stats = [{"label": "待受理事项", "value": 0}, {"label": "办理中事项", "value": 0}, {"label": "超时未办结", "value": 0}]
+const STAT_LABELS = ["待受理事项", "办理中事项", "超时未办结"]
+const DEFAULT_EMPTY_NOTE = '暂无服务保障数据，可先登记服务事项'
 
 const rows = ref<Row[]>([])
 const total = ref(0)
+const stats = ref(STAT_LABELS.map((label) => ({ label, value: 0 })))
 const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const emptyNote = ref(DEFAULT_EMPTY_NOTE)
+const filters = ref({ keyword: '', status: '' })
+
+function rowActions(row: Row): string[] {
+  const available = row['可执行动作']
+  return Array.isArray(available) ? available : []
+}
 
 function resetFilters() {
-  filters.value = {}
+  filters.value = { keyword: '', status: '' }
   void reload()
 }
 
@@ -99,10 +123,11 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('服务保障动作未生效，请稍后重试')
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message ?? '服务保障动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -112,15 +137,21 @@ async function runAction(action: string, row: Row) {
 
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
+  const query = new URLSearchParams()
+  if (filters.value.keyword) query.set('keyword', filters.value.keyword)
+  if (filters.value.status) query.set('status', filters.value.status)
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
+    const response = await request(`${ENDPOINT}?${query.toString()}`)
     if (!response.ok) {
       throw new Error('服务事项列表读取失败')
     }
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    // 统计汇总与列表同一次响应、同一份口径，超期条数与事项状态不会再对不上
+    const summary = payload.summary ?? {}
+    stats.value = STAT_LABELS.map((label) => ({ label, value: summary[label] ?? 0 }))
+    emptyNote.value = payload.note ?? DEFAULT_EMPTY_NOTE
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '服务保障列表读取失败'
   }

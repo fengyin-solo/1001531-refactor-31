@@ -1,12 +1,16 @@
-"""服务保障接口：维护服务事项，覆盖受理事项、确认办结、退回事项等动作。"""
+"""服务保障接口：维护服务事项，覆盖受理事项、确认办结、退回事项等动作。
+
+超期口径不在接口层重写：列表展示、动作拦截与统计汇总统一走
+app.services.overdue 里的共用判断，两边不会再对不上。
+"""
 from __future__ import annotations
 
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.service import ServiceService
+from app.schemas import ActionResult, EntryPayload, ServicePageResult
+from app.services.service import EMPTY_RESULT_NOTE, ServiceService
 
 router = APIRouter(prefix="/api/service", tags=["服务保障"])
 
@@ -16,18 +20,27 @@ LIST_FIELDS = ["事项编号", "服务对象", "服务类别", "响应时限", "
 STATUSES = ["待受理", "办理中", "已办结", "已退回"]
 
 
-@router.get("", response_model=PageResult[dict])
+@router.get("", response_model=ServicePageResult)
 def list_entries(
     keyword: str | None = Query(default=None, description="按事项编号检索"),
     status: str | None = Query(default=None, description="待受理、办理中、已办结、已退回"),
     page: int = 1,
     size: int = 20,
-) -> PageResult[dict]:
-    """按事项编号与状态过滤服务保障列表；没有数据时返回空页，不报错。"""
+) -> ServicePageResult:
+    """按事项编号与状态过滤服务保障列表；统计汇总与超期说明随列表一起返回，口径一致。"""
     if size > 200:
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
-    return PageResult(items=items, total=total, page=page, size=size)
+    summary = service.summarize(keyword=keyword, status=status)
+    note = EMPTY_RESULT_NOTE if total == 0 else None
+    return ServicePageResult(items=items, total=total, page=page, size=size, summary=summary, note=note)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出服务保障清单：返回当前过滤条件下的全量数据，超期口径与列表一致。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "service", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -56,10 +69,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出服务保障清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "service", "total": total, "items": items}
